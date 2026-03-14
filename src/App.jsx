@@ -39,7 +39,8 @@ function App() {
   const transformForward = () => {
     try {
       const result = [];
-      const pathMatches = input.matchAll(/Path\d+\s*=\s*follower\.pathBuilder\(\)([\s\S]*?)\.build\(\);/g);
+      // More flexible regex that handles various formatting styles
+      const pathMatches = input.matchAll(/Path\d+\s*=\s*follower\s*\.?\s*pathBuilder\s*\(\s*\)([\s\S]*?)\.build\s*\(\s*\)\s*;/g);
       
       for (const match of pathMatches) {
         const pathContent = match[1];
@@ -92,7 +93,8 @@ function App() {
   const transformReverse = () => {
     try {
       const result = ['public static class Paths {'];
-      const pathMatches = input.matchAll(/follower\.pathBuilder\(\)\.addPath\(([\s\S]*?)\.build\(\)/g);
+      // More flexible regex
+      const pathMatches = input.matchAll(/follower\s*\.?\s*pathBuilder\s*\(\s*\)\s*\.?\s*addPath\s*\(([\s\S]*?)\.build\s*\(\s*\)/g);
       
       let pathNum = 1;
       for (const match of pathMatches) {
@@ -108,7 +110,8 @@ function App() {
       result.push('    public Paths(Follower follower) {');
       
       pathNum = 1;
-      const pathMatches2 = input.matchAll(/follower\.pathBuilder\(\)\.addPath\(([\s\S]*?)\.build\(\)/g);
+      // More flexible regex for second pass
+      const pathMatches2 = input.matchAll(/follower\s*\.?\s*pathBuilder\s*\(\s*\)\s*\.?\s*addPath\s*\(([\s\S]*?)\.build\s*\(\s*\)/g);
       
       for (const match of pathMatches2) {
         const pathContent = match[1];
@@ -246,10 +249,80 @@ function App() {
     }
   };
 
+  const mirrorField = () => {
+    try {
+      const result = [];
+      const pathMatches = input.matchAll(/follower\.pathBuilder\(\)\.addPath\(([\s\S]*?)\.build\(\)/g);
+      
+      for (const match of pathMatches) {
+        const pathContent = match[1];
+        const isCurve = pathContent.includes('new BezierCurve');
+        const curveType = isCurve ? 'BezierCurve' : 'BezierLine';
+        
+        const poses = [];
+        const poseMatches = pathContent.matchAll(/new Pose\(([\d.]+),\s*([\d.]+)\)/g);
+        for (const poseMatch of poseMatches) {
+          const x = parseFloat(poseMatch[1]);
+          const y = parseFloat(poseMatch[2]);
+          // Mirror across center: newY = 144 - y, x stays same
+          const mirroredY = 144 - y;
+          poses.push(`                                new Pose(${x.toFixed(3)}, ${mirroredY.toFixed(3)})`);
+        }
+        
+        const linearMatch = pathContent.match(/setLinearHeadingInterpolation\(Math\.toRadians\(([\d.-]+)\),\s*Math\.toRadians\(([\d.-]+)\)\)/);
+        const tangentMatch = pathContent.match(/setTangentHeadingInterpolation\(\)/);
+        
+        result.push('        follower.pathBuilder().addPath(');
+        result.push(`                        new ${curveType}(`);
+        result.push(poses.join(',\n'));
+        result.push('                        )');
+        
+        if (linearMatch) {
+          const angle1 = parseFloat(linearMatch[1]);
+          const angle2 = parseFloat(linearMatch[2]);
+          // Mirror angles: newAngle = -angle
+          const mirroredAngle1 = -angle1;
+          const mirroredAngle2 = -angle2;
+          result.push(`                ).setLinearHeadingInterpolation(Math.toRadians(${mirroredAngle1}), Math.toRadians(${mirroredAngle2}))`);
+        } else if (tangentMatch) {
+          result.push('                ).setTangentHeadingInterpolation()');
+        }
+        
+        result.push('                .setGlobalDeceleration()');
+        result.push('                .build(),\n');
+      }
+      
+      if (result.length > 0) {
+        const lastBuildIndex = result.lastIndexOf('                .build(),\n');
+        if (lastBuildIndex !== -1) {
+          result[lastBuildIndex] = '                .build()';
+        }
+      }
+      
+      // Extract starting pose if it exists
+      const startPoseMatch = input.match(/follower\.setStartingPose\(new Pose\(([\d.]+),\s*([\d.]+),\s*Math\.toRadians\(([\d.-]+)\)\)\);/);
+      let startPoseLine = '';
+      if (startPoseMatch) {
+        const startX = parseFloat(startPoseMatch[1]);
+        const startY = parseFloat(startPoseMatch[2]);
+        const startAngle = parseFloat(startPoseMatch[3]);
+        const mirroredStartY = 144 - startY;
+        const mirroredStartAngle = -startAngle;
+        startPoseLine = `\npaths = new Paths(follower, pathChains);\nfollower.setStartingPose(new Pose(${startX.toFixed(3)},${mirroredStartY.toFixed(3)},Math.toRadians(${mirroredStartAngle})));`;
+      }
+      
+      const finalOutput = 'pathChains = new PathChain[] {\n' + result.join('\n') + '\n};' + startPoseLine;
+      setOutput(finalOutput);
+    } catch (e) {
+      setOutput('Error: ' + e.message);
+    }
+  };
+
   const handleTransform = () => {
     if (mode === 'forward') transformForward();
     else if (mode === 'reverse') transformReverse();
     else if (mode === 'toPP') transformToPP();
+    else if (mode === 'mirrorField') mirrorField();
   };
 
   const styles = {
@@ -393,6 +466,12 @@ function App() {
           >
             pathChains → .pp file
           </button>
+          <button
+            onClick={() => setMode('mirrorField')}
+            style={{...styles.button, ...(mode === 'mirrorField' ? styles.buttonActive : styles.buttonInactive)}}
+          >
+            Mirror Field
+          </button>
         </div>
         
         <div style={window.innerWidth >= 1024 ? styles.gridLg : styles.grid}>
@@ -402,7 +481,7 @@ function App() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               style={styles.textarea}
-              placeholder={mode === 'forward' ? 'Paste Paths class...' : 'Paste pathChains array...'}
+              placeholder={mode === 'forward' ? 'Paste Paths class...' : mode === 'mirrorField' ? 'Paste pathChains to mirror...' : 'Paste pathChains array...'}
             />
           </div>
           
